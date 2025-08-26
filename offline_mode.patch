@@ -1,0 +1,448 @@
+Subject: [PATCH] offline mode
+---
+Index: app/src/main/java/com/codeid/pokemon/data/local/UserDao.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/data/local/UserDao.kt b/app/src/main/java/com/codeid/pokemon/data/local/UserDao.kt
+--- a/app/src/main/java/com/codeid/pokemon/data/local/UserDao.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/data/local/UserDao.kt	(date 1754229905309)
+@@ -18,5 +18,8 @@
+     suspend fun getUserByEmail(email: String): UserEntity?
+ 
+     @Query("DELETE FROM users")
+-    suspend fun clearUsers() // optional untuk logout/reset
++    suspend fun clearUsers()
++
++    @Query("SELECT * FROM users")
++    suspend fun getAll(): List<UserEntity>
+ }
+Index: app/src/main/java/com/codeid/pokemon/domain/model/Pokemon.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/domain/model/Pokemon.kt b/app/src/main/java/com/codeid/pokemon/domain/model/Pokemon.kt
+--- a/app/src/main/java/com/codeid/pokemon/domain/model/Pokemon.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/domain/model/Pokemon.kt	(date 1754230457680)
+@@ -1,4 +1,5 @@
+ package com.codeid.pokemon.domain.model
++
+ data class Pokemon(
+     val name: String,
+     val url: String,
+Index: app/src/main/java/com/codeid/pokemon/data/local/AppDatabase.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/data/local/AppDatabase.kt b/app/src/main/java/com/codeid/pokemon/data/local/AppDatabase.kt
+--- a/app/src/main/java/com/codeid/pokemon/data/local/AppDatabase.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/data/local/AppDatabase.kt	(date 1754230100239)
+@@ -8,6 +8,8 @@
+ @Database(entities = [UserEntity::class], version = 1)
+ abstract class AppDatabase : RoomDatabase() {
+     abstract fun userDao(): UserDao
++    abstract fun pokemonDao(): PokemonDao
++
+ 
+     companion object {
+         @Volatile
+Index: app/src/main/java/com/codeid/pokemon/presentation/home/HomeFragment.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/presentation/home/HomeFragment.kt b/app/src/main/java/com/codeid/pokemon/presentation/home/HomeFragment.kt
+--- a/app/src/main/java/com/codeid/pokemon/presentation/home/HomeFragment.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/presentation/home/HomeFragment.kt	(date 1754231936380)
+@@ -10,6 +10,7 @@
+ import androidx.recyclerview.widget.LinearLayoutManager
+ import com.codeid.pokemon.databinding.FragmentHomeBinding
+ import com.codeid.pokemon.presentation.common.ViewModelFactory
++import kotlinx.coroutines.flow.collectLatest
+ import kotlinx.coroutines.launch
+ 
+ class HomeFragment : Fragment() {
+@@ -21,6 +22,7 @@
+     private val adapter = HomeAdapter()
+     private var offset = 0
+     private var isLoading = false
++    private var isSearchMode = false
+ 
+     override fun onCreateView(
+         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
+@@ -30,46 +32,53 @@
+     }
+ 
+     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+-        super.onViewCreated(view, savedInstanceState)
+-
+         viewModel = ViewModelFactory.inject(requireContext()).create(HomeViewModel::class.java)
+ 
+         binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
+         binding.recyclerView.adapter = adapter
+ 
++        setupObservers()
++        setupSearch()
++        setupPagination()
++
++        viewModel.loadPokemons(offset = offset) // initial load
++    }
++
++    private fun setupObservers() {
++        lifecycleScope.launch {
++            viewModel.pokemons.collectLatest { list ->
++                adapter.submitList(list)
++                offset = list.size
++                isLoading = false
++            }
++        }
++    }
++
++    private fun setupSearch() {
++        binding.searchInput.addTextChangedListener { editable ->
++            val query = editable?.toString().orEmpty()
++            val filtered = viewModel.searchPokemon(query)
++            isSearchMode = query.isNotEmpty()
++            adapter.submitList(filtered)
++        }
++    }
++
++    private fun setupPagination() {
+         binding.recyclerView.addOnScrollListener(object : androidx.recyclerview.widget.RecyclerView.OnScrollListener() {
+             override fun onScrolled(recyclerView: androidx.recyclerview.widget.RecyclerView, dx: Int, dy: Int) {
++                if (isSearchMode) return // do not paginate in search mode
++
+                 val layoutManager = recyclerView.layoutManager as LinearLayoutManager
+                 val lastVisibleItem = layoutManager.findLastVisibleItemPosition()
+                 val totalItemCount = layoutManager.itemCount
+ 
+-                binding.searchInput.addTextChangedListener {
+-                    val query = it.toString()
+-                    val filtered = viewModel.searchPokemon(query, adapter.currentList)
+-                    adapter.submitList(filtered)
+-                }
+-
+-
+                 if (!isLoading && lastVisibleItem >= totalItemCount - 1) {
+                     isLoading = true
+-                    lifecycleScope.launch {
+-                        val newPokemons = viewModel.getPokemons(offset)
+-                        offset += newPokemons.size
+-                        adapter.submitList(adapter.currentList + newPokemons)
+-                        isLoading = false
+-                    }
++                    viewModel.loadPokemons(offset = offset)
+                 }
+             }
+         })
+-
+-        lifecycleScope.launch {
+-            val pokemons = viewModel.getPokemons(offset)
+-            offset += pokemons.size
+-            adapter.submitList(pokemons)
+-        }
+     }
+-
+-
+ 
+     override fun onDestroyView() {
+         super.onDestroyView()
+Index: app/src/main/java/com/codeid/pokemon/data/repository/PokemonRepositoryImpl.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/data/repository/PokemonRepositoryImpl.kt b/app/src/main/java/com/codeid/pokemon/data/repository/PokemonRepositoryImpl.kt
+--- a/app/src/main/java/com/codeid/pokemon/data/repository/PokemonRepositoryImpl.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/data/repository/PokemonRepositoryImpl.kt	(date 1754231217837)
+@@ -1,6 +1,7 @@
+ package com.codeid.pokemon.data.repository
+ 
+ import com.codeid.pokemon.data.local.AppDatabase
++import com.codeid.pokemon.data.local.PokemonLocalDataSource
+ import com.codeid.pokemon.data.local.UserEntity
+ import com.codeid.pokemon.data.remote.PokemonRemoteDataSource
+ import com.codeid.pokemon.domain.model.Pokemon
+@@ -9,40 +10,64 @@
+ 
+ class PokemonRepositoryImpl(
+     private val remoteDataSource: PokemonRemoteDataSource,
++    private val local: PokemonLocalDataSource,
+     private val database: AppDatabase
+ ) : PokemonRepository {
+ 
+     override suspend fun getPokemonList(limit: Int, offset: Int): List<Pokemon> {
+-        return remoteDataSource.fetchPokemonList(limit, offset)
++        return try {
++            val pokemons = remoteDataSource.fetchPokemonList(limit, offset)
++            local.saveAll(pokemons)
++            pokemons
++        } catch (e: Exception) {
++            local.getAll()
++        }
+     }
+ 
+     override suspend fun getPokemonDetail(name: String): Pokemon {
+-        return remoteDataSource.fetchPokemonDetail(name)
++        return try {
++            remoteDataSource.fetchPokemonDetail(name)
++        } catch (e: Exception) {
++            throw e
++        }
+     }
+ 
+     override suspend fun searchPokemon(name: String): Pokemon {
+-        return remoteDataSource.fetchPokemonDetail(name)
++        return try {
++            remoteDataSource.fetchPokemonDetail(name)
++        } catch (e: Exception) {
++            throw e
++        }
+     }
+ 
+     override suspend fun savePokemonList(pokemons: List<Pokemon>) {
++        local.saveAll(pokemons)
+     }
+ 
+     override suspend fun getCachedPokemonList(): List<Pokemon> {
+-        return emptyList()
++        return local.getAll()
+     }
+ 
+     override suspend fun registerUser(user: User) {
+-        val entity = UserEntity( username = user.username,email = user.email,  password = user.password)
++        val entity = UserEntity(
++            username = user.username,
++            email = user.email,
++            password = user.password
++        )
+         database.userDao().insert(user = entity)
+     }
+ 
+     override suspend fun loginUser(email: String, password: String): User? {
+         val entity = database.userDao().login(email, password)
+-        return entity?.let { User(it.username,it.email, it.password) }
++        return entity?.let {
++            User(it.username, it.email, it.password)
++        }
+     }
+ 
+     override suspend fun getUserByEmail(email: String): User? {
+         val entity = database.userDao().getUserByEmail(email)
+-        return entity?.let { User(it.username, it.email, it.password) }
++        return entity?.let {
++            User(it.username, it.email, it.password)
++        }
+     }
+ }
+Index: app/src/main/java/com/codeid/pokemon/data/local/PokemonDao.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/data/local/PokemonDao.kt b/app/src/main/java/com/codeid/pokemon/data/local/PokemonDao.kt
+new file mode 100644
+--- /dev/null	(date 1754230070427)
++++ b/app/src/main/java/com/codeid/pokemon/data/local/PokemonDao.kt	(date 1754230070427)
+@@ -0,0 +1,19 @@
++package com.codeid.pokemon.data.local
++
++import androidx.room.Dao
++import androidx.room.Insert
++import androidx.room.OnConflictStrategy
++import androidx.room.Query
++
++@Dao
++interface PokemonDao {
++
++    @Query("SELECT * FROM pokemon")
++    suspend fun getAll(): List<PokemonEntity>
++
++    @Insert(onConflict = OnConflictStrategy.REPLACE)
++    suspend fun insertAll(pokemons: List<PokemonEntity>)
++
++    @Query("DELETE FROM pokemon")
++    suspend fun clearAll()
++}
+Index: app/src/main/java/com/codeid/pokemon/di/Injector.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/di/Injector.kt b/app/src/main/java/com/codeid/pokemon/di/Injector.kt
+--- a/app/src/main/java/com/codeid/pokemon/di/Injector.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/di/Injector.kt	(date 1754230997060)
+@@ -1,24 +1,39 @@
+ package com.codeid.pokemon.di
+ 
+ import android.content.Context
++import com.codeid.pokemon.data.local.AppDatabase
++import com.codeid.pokemon.data.local.PokemonLocalDataSource
+ import com.codeid.pokemon.data.remote.PokemonRemoteDataSource
+ import com.codeid.pokemon.data.repository.PokemonRepositoryImpl
+ import com.codeid.pokemon.domain.repository.PokemonRepository
++import com.codeid.pokemon.domain.usecase.GetPokemonDetailUseCase
+ import com.codeid.pokemon.domain.usecase.GetPokemonListUseCase
+ import com.codeid.pokemon.domain.usecase.LoginUseCase
+ import com.codeid.pokemon.domain.usecase.RegisterUseCase
+ import com.codeid.pokemon.domain.usecase.SavePokemonListUseCase
+ import com.codeid.pokemon.utils.RetrofitBuilder
+-import com.codeid.pokemon.data.local.AppDatabase
+-import com.codeid.pokemon.domain.usecase.GetPokemonDetailUseCase
+ 
+ object Injector {
+ 
++    private fun provideDatabase(context: Context): AppDatabase {
++        return AppDatabase.getInstance(context)
++    }
++
++    private fun provideRemoteDataSource(): PokemonRemoteDataSource {
++        val apiService = RetrofitBuilder.apiService
++        return PokemonRemoteDataSource(apiService)
++    }
++
++    private fun provideLocalDataSource(context: Context): PokemonLocalDataSource {
++        val db = provideDatabase(context)
++        return PokemonLocalDataSource(db.pokemonDao())
++    }
++
+     fun provideRepository(context: Context): PokemonRepository {
+-        val apiService = RetrofitBuilder.apiService
+-        val remoteDataSource = PokemonRemoteDataSource(apiService)
+-        val database = AppDatabase.getInstance(context)
+-        return PokemonRepositoryImpl(remoteDataSource, database)
++        val remoteDataSource = provideRemoteDataSource()
++        val localDataSource = provideLocalDataSource(context)
++        val database = provideDatabase(context)
++        return PokemonRepositoryImpl(remoteDataSource, localDataSource, database)
+     }
+ 
+     fun provideGetPokemonListUseCase(context: Context): GetPokemonListUseCase =
+Index: app/src/main/java/com/codeid/pokemon/data/local/PokemonLocalDataSource.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/data/local/PokemonLocalDataSource.kt b/app/src/main/java/com/codeid/pokemon/data/local/PokemonLocalDataSource.kt
+new file mode 100644
+--- /dev/null	(date 1754230457698)
++++ b/app/src/main/java/com/codeid/pokemon/data/local/PokemonLocalDataSource.kt	(date 1754230457698)
+@@ -0,0 +1,25 @@
++package com.codeid.pokemon.data.local
++
++import com.codeid.pokemon.domain.model.Pokemon
++
++class PokemonLocalDataSource(private val dao: PokemonDao) {
++
++    
++    suspend fun saveAll(pokemons: List<Pokemon>) {
++        val entities = pokemons.map { PokemonEntity(it.name) }
++        dao.clearAll()
++        dao.insertAll(entities)
++    }
++
++    suspend fun getAll(): List<Pokemon> {
++        return dao.getAll().map { entity ->
++            Pokemon(
++                name = entity.name,
++                url = TODO(),
++                abilities = TODO()
++            )
++        }
++    }
++
++    
++}
+Index: app/src/main/java/com/codeid/pokemon/presentation/home/HomeViewModel.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/presentation/home/HomeViewModel.kt b/app/src/main/java/com/codeid/pokemon/presentation/home/HomeViewModel.kt
+--- a/app/src/main/java/com/codeid/pokemon/presentation/home/HomeViewModel.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/presentation/home/HomeViewModel.kt	(date 1754231686555)
+@@ -5,6 +5,8 @@
+ import com.codeid.pokemon.domain.model.Pokemon
+ import com.codeid.pokemon.domain.usecase.GetPokemonListUseCase
+ import com.codeid.pokemon.domain.usecase.SavePokemonListUseCase
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.StateFlow
+ import kotlinx.coroutines.launch
+ 
+ class HomeViewModel(
+@@ -12,20 +14,37 @@
+     private val savePokemonListUseCase: SavePokemonListUseCase
+ ) : ViewModel() {
+ 
++    private val _pokemons = MutableStateFlow<List<Pokemon>>(emptyList())
++    val pokemons: StateFlow<List<Pokemon>> get() = _pokemons
++
++    private var currentList: List<Pokemon> = emptyList()
++
+     suspend fun getPokemons(offset: Int = 0): List<Pokemon> {
+-        val pokemons = getPokemonListUseCase(limit = 10, offset = offset)
+-        viewModelScope.launch { savePokemonListUseCase(pokemons) }
+-        return pokemons
++        return getPokemonListUseCase(limit = 10, offset = offset).also {
++            currentList = it
++            savePokemonListUseCase(it)
++        }
++    }
++
++    fun loadPokemons(offset: Int = 0) {
++        viewModelScope.launch {
++            val pokemons = getPokemonListUseCase(limit = 10, offset = offset)
++            currentList = pokemons
++            _pokemons.value = pokemons
++            savePokemonListUseCase(pokemons)
++        }
+     }
+ 
+-    fun searchPokemon(query: String, pokemons: List<Pokemon>): List<Pokemon> {
+-        return if (query.isEmpty()) pokemons
+-        else pokemons.filter { it.name.contains(query, ignoreCase = true) }
++    fun loadCachedPokemons() {
++        viewModelScope.launch {
++            val cached = getPokemonListUseCase(limit = 0, offset = 0)
++            currentList = cached
++            _pokemons.value = cached
++        }
+     }
+ 
+-
+-
+-    fun searchPokemonByName(pokemons: List<Pokemon>, query: String): List<Pokemon> {
+-        return pokemons.filter { it.name.contains(query, ignoreCase = true) }
++    fun searchPokemon(query: String): List<Pokemon> {
++        return if (query.isBlank()) currentList
++        else currentList.filter { it.name.contains(query, ignoreCase = true) }
+     }
+-}
+\ No newline at end of file
++}
+Index: app/src/main/java/com/codeid/pokemon/data/local/PokemonEntity.kt
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/app/src/main/java/com/codeid/pokemon/data/local/PokemonEntity.kt b/app/src/main/java/com/codeid/pokemon/data/local/PokemonEntity.kt
+--- a/app/src/main/java/com/codeid/pokemon/data/local/PokemonEntity.kt	(revision 50a41f7079c8f00f3065596772c55f417f9d79ff)
++++ b/app/src/main/java/com/codeid/pokemon/data/local/PokemonEntity.kt	(date 1754230457689)
+@@ -2,13 +2,8 @@
+ 
+ import androidx.room.Entity
+ import androidx.room.PrimaryKey
+-import com.codeid.pokemon.domain.model.Pokemon
+ 
+ @Entity(tableName = "pokemon")
+ data class PokemonEntity(
+-    @PrimaryKey val name: String,
+-    val url: String
++    @PrimaryKey val name: String
+ )
+-
+-fun PokemonEntity.toDomain(): Pokemon = Pokemon(name, url)
+-fun Pokemon.toEntity(): PokemonEntity = PokemonEntity(name, url)
